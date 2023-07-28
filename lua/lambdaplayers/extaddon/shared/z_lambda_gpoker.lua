@@ -23,6 +23,7 @@ local function InitializeModule()
     local table_remove = table.remove
     local table_Copy = table.Copy
     local table_IsEmpty = table.IsEmpty
+    local table_Empty = table.Empty
     local ipairs = ipairs
     local Rand = math.Rand
     local random = math.random
@@ -77,6 +78,25 @@ local function InitializeModule()
 
     gPoker.betType[ 1 ].get = GetHealthBet
     gPoker.betType[ 1 ].add = AddHealthBet
+
+    --
+
+    local function OnLambdaLeaveMatch( lambda )
+        lambda.l_PlayingPoker = false
+        lambda.l_PokerTable = NULL
+        lambda:PreventWeaponSwitch( false )
+
+        local rndAction = lambda.l_PokerQuitAction
+        if rndAction == 1 then
+            lambda:SetState( "FindTarget" )
+        elseif rndAction == 2 then
+            lambda:RetreatFrom( self )
+        else
+            lambda:SetState()
+        end
+
+        lambda.l_NextPokerTableCheck = ( CurTime() + random( 20, 45 ) )
+    end
 
     --
 
@@ -326,25 +346,13 @@ local function InitializeModule()
         SimpleTimer( 0, function() if IsValid( chair ) then chair:Remove() end end )
 
         if isLambda then
-            ply.l_PlayingPoker = false
-            ply.l_PokerTable = NULL
-            ply:PreventWeaponSwitch( false )
+            OnLambdaLeaveMatch( ply )
 
-            local rndAction = ply.l_PokerQuitAction
-            if rndAction == 1 then
-                ply:SetState( "FindTarget" )
-            elseif rndAction == 2 then
-                ply:RetreatFrom( self )
-            else
-                ply:SetState( "Idle" )
+            if self:GetTurn() == key and #self.players > 0 then
+                self:nextTurn()
             end
-
-            ply.l_NextPokerTableCheck = ( CurTime() + random( 20, 45 ) )
         end
 
-        if isLambda and self:GetTurn() == key and #self.players > 0 then
-            self:nextTurn()
-        end
 
         for _, deck in pairs( self.decks[ key ] ) do
             if IsValid( Entity( deck.ind ) ) then Entity( deck.ind ):Remove() end
@@ -504,8 +512,8 @@ local function InitializeModule()
             if plyCount < maxPlys then
                 for _, lambda in RandomPairs( GetLambdaPlayers() ) do
                     if !LambdaIsValid( lambda ) or lambda.l_PlayingPoker or lambda:InCombat() or lambda:IsPanicking() or !lambda:IsInRange( ent, 1000 ) then continue end
-                    if random( 100 ) > lambda:GetFriendlyChance() or random( 2 ) != 1 or !lambda:IsPokerTableAvailable( ent ) then continue end
-                    
+                    if random( 100 ) > lambda:GetFriendlyChance() or !lambda:IsPokerTableAvailable( ent ) then continue end
+
                     self:SetState( "GoToPokerTable", ent )
                     self:CancelMovement()
 
@@ -588,9 +596,7 @@ local function InitializeModule()
 
         ent:CallOnRemove( "Lambda_GPokerSupport_OnTableRemove" .. self:GetCreationID(), function( ent ) 
             if !IsValid( self ) or !self.l_PlayingPoker then return end
-            self.l_PlayingPoker = false
-            self.l_PokerTable = NULL
-            self:SetState()
+            OnLambdaLeaveMatch( self )
         end )
 
         ent:Use( self )
