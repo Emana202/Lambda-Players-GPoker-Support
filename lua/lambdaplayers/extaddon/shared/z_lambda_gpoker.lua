@@ -62,8 +62,12 @@ local function InitializeModule()
 
         local hp = ( gPoker.betType[ tbl:GetBetType() ].get( ply ) + bet )
         if hp < 1 then 
-            tbl:removePlayerFromMatch( ply )
-            if ply.IsLambdaPlayer or ply:IsPlayer() then ply:Kill() end
+            local isLambda = ply.IsLambdaPlayer
+            local chair = ply:GetVehicle()
+            tbl:removePlayerFromMatch( ply, isLambda )
+
+            if isLambda or ply:IsPlayer() then ply:Kill() end
+            if isLambda and IsValid( chair ) then chair:Remove() end
         else
             if ply.IsLambdaPlayer or ply:IsPlayer() then 
                 ply:SetHealth( hp ) 
@@ -331,7 +335,7 @@ local function InitializeModule()
         net.Send( ply )
     end
 
-    local function LambdaRemoveFromMatch( self, ply )
+    local function LambdaRemoveFromMatch( self, ply, lambdaKill )
         local isLambda = ply.IsLambdaPlayer
         if !isLambda and !ply:IsPlayer() then 
             self:removeBot( ply ) 
@@ -341,9 +345,11 @@ local function InitializeModule()
         local key = self:getPlayerKey( ply )
         if key == nil then return end
 
-        local chair = ply:GetVehicle()
-        ply:ExitVehicle()
-        SimpleTimer( 0, function() if IsValid( chair ) then chair:Remove() end end )
+        if !lambdaKill then
+            local chair = ply:GetVehicle()
+            ply:ExitVehicle()
+            if IsValid( chair ) then chair:Remove() end
+        end
 
         if isLambda then
             OnLambdaLeaveMatch( ply )
@@ -352,7 +358,6 @@ local function InitializeModule()
                 self:nextTurn()
             end
         end
-
 
         for _, deck in pairs( self.decks[ key ] ) do
             if IsValid( Entity( deck.ind ) ) then Entity( deck.ind ):Remove() end
@@ -504,18 +509,43 @@ local function InitializeModule()
     --
 
     local function LambdaSetGameState( ent, name, old, new )
+        local plys = ent.players
+
+        if new == 0 then
+            local intermissionTime = 5
+            
+            if ( ent:GetBotsPlaceholder() and ent:getPlayersAmount() or #plys ) < ent:GetMaxPlayers() then
+                local foundRealPlayer = false
+                local foundLambdaPlayer = false
+                
+                for _, ply in pairs( plys ) do
+                    local plyEnt = Entity( ply.ind )
+                    if !IsValid( plyEnt ) then continue end
+                    
+                    foundRealPlayer = ( foundRealPlayer or plyEnt:IsPlayer() )
+                    foundLambdaPlayer = ( foundLambdaPlayer or plyEnt.IsLambdaPlayer )
+                end
+
+                if foundLambdaPlayer and !foundRealPlayer then
+                    intermissionTime = 10
+                end
+            end
+            
+            ent.intermission = intermissionTime
+        end
+
         -- Invite some nearby friendly Lambdas on a start of intermission
         if old == #gPoker.gameType[ ent:GetGameType() ].states and new == -1 then
-            local plyCount = ( ent:GetBotsPlaceholder() and ent:getPlayersAmount() or #ent.players )
+            local plyCount = ( ent:GetBotsPlaceholder() and ent:getPlayersAmount() or #plys )
             local maxPlys = ent:GetMaxPlayers()
-            
+
             if plyCount < maxPlys then
                 for _, lambda in RandomPairs( GetLambdaPlayers() ) do
-                    if !LambdaIsValid( lambda ) or lambda.l_PlayingPoker or lambda:InCombat() or lambda:IsPanicking() or !lambda:IsInRange( ent, 1000 ) then continue end
+                    if !LambdaIsValid( lambda ) or lambda.l_PlayingPoker or lambda:InCombat() or lambda:IsPanicking() or !lambda:IsInRange( ent, ( ent.intermission == 10 and 1750 or 800 ) ) then continue end
                     if random( 100 ) > lambda:GetFriendlyChance() or !lambda:IsPokerTableAvailable( ent ) then continue end
 
-                    self:SetState( "GoToPokerTable", ent )
-                    self:CancelMovement()
+                    lambda:SetState( "GoToPokerTable", ent )
+                    lambda:CancelMovement()
 
                     plyCount = ( plyCount + 1 )
                     if plyCount >= maxPlys then break end
@@ -529,9 +559,6 @@ local function InitializeModule()
 
         local stateAdd = ( ent:GetGameType() == 1 and 4 or 0 )
         if new == ( 6 + stateAdd ) then return end
-
-        local plys = ent.players
-        if #plys == 0 then return end
 
         SimpleTimer( 0, function()
             if !IsValid( ent ) then return end
@@ -607,13 +634,16 @@ local function InitializeModule()
         return ( tbl:GetGameState() < 1 and ( tbl:GetBotsPlaceholder() and tbl:getPlayersAmount() or #tbl.players ) < tbl:GetMaxPlayers() )
     end
 
-    local tblMove = { run = true, tol = 80 }
     local function GoToPokerTable( self, pokerTbl )
-        self:MoveToPos( pokerTbl, tblMove )
-        if !self:GetState( "GoToPokerTable" ) or !IsValid( pokerTbl ) or !self:IsPokerTableAvailable( pokerTbl ) then return true end
+        if !IsValid( pokerTbl ) or !self:IsPokerTableAvailable( pokerTbl ) then return true end
 
-        if !self:IsInRange( pokerTbl, 80 ) then return end
-        self:JoinPokerGame( pokerTbl )
+        self:MoveToPos( pokerTbl, { run = true, cbTime = 0.1, callback = function()
+            if !self:GetState( "GoToPokerTable" ) or !IsValid( pokerTbl ) or !self:IsPokerTableAvailable( pokerTbl ) then return false end
+            if !self:IsInRange( pokerTbl, 90 ) then return end
+
+            self:JoinPokerGame( pokerTbl )
+            return false
+        end } )
     end
 
     local function LambdaSetEyeAngles() end
@@ -652,16 +682,16 @@ local function InitializeModule()
 
         --
 
-        local function IsPlayingPoker( ent )
+        local function GetPlayerPokerTable( ent )
             if ent:IsPlayer() then 
                 local veh = ent:GetVehicle()
                 if IsValid( veh ) then
                     local pokerTbl = veh:GetParent()
-                    return ( IsValid( pokerTbl ) and pokerTbl:GetClass() == "ent_poker_game" )
+                    return ( IsValid( pokerTbl ) and pokerTbl:GetClass() == "ent_poker_game" and pokerTbl )
                 end
             end
 
-            return ( ent.l_PlayingPoker )
+            return ( ent.l_PokerTable )
         end
 
         --
@@ -700,10 +730,20 @@ local function InitializeModule()
             end
 
             local enemy = self:GetEnemy()
-            if IsValid( enemy ) and IsPlayingPoker( enemy ) then
-                self:SetEnemy( NULL )
-                self:SetState()
-                self:CancelMovement()
+            if IsValid( enemy ) then
+                local enemyTbl = GetPlayerPokerTable( enemy )
+                if IsValid( enemyTbl ) then
+                    self:SetEnemy( NULL )
+                    self:CancelMovement()
+
+                    if !self.l_PlayingPoker then
+                        self:SetState()
+                        if random( 100 ) <= self:GetCombatChance() and self:IsPokerTableAvailable( enemyTbl ) then
+                            self:SetState( "GoToPokerTable", enemyTbl )
+                        end
+                    end
+                end
+
                 return
             end
 
@@ -712,7 +752,7 @@ local function InitializeModule()
         end
 
         local function OnLambdaCanTarget( self, target )
-            if self.l_PlayingPoker or IsPlayingPoker( target ) then return true end
+            if self.l_PlayingPoker or IsValid( GetPlayerPokerTable( target ) ) then return true end
         end
 
         local function OnLambdaChangeState( self, old, new )
