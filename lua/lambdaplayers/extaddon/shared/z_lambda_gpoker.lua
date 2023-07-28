@@ -90,14 +90,126 @@ local function InitializeModule()
         if !IsValid( ply ) then ent:nextTurn() return end
 
         if gPoker.gameType[ ent:GetGameType() ].states[ state ].drawing then
-            if ent.players[ new ].bot or ply.IsLambdaPlayer then 
+            if ply.IsLambdaPlayer then 
+                local cards = table_Copy( ent.decks[ new ] )
+                for _, v in pairs( ent.communityDeck ) do if v.reveal then cards[ #cards + 1 ] = v end end
+
+                local st, vl = ent:getDeckValue( cards )
+                local proceedTime = ( random( 5, 50 ) * 0.1 )
+
+                local suits, ranks = {}, {}
+                for i = 0, 12 do
+                    if i < 4 then suits[ i ] = 0 end
+                    ranks[ i ] = 0
+                end
+                for _, v in pairs( ent.decks[ new ] ) do
+                    suits[ v.suit ] = ( suits[ v.suit ] + 1 )
+                    ranks[ v.rank ] = ( ranks[ v.rank ] + 1 )
+                end
+
+                local picked = {}
+                local chance = random( 0, 100 )
+                local minChance, highCard
+                for i = 12, 0, -1 do if ranks[ i ] > 0 then highCard = i break end end
+
+                if st == 0 or st == 1 or st == 3 then
+                    local minSuits = random( 2, 4 )
+
+                    for i = 0, 3 do
+                        if suits[i] < minSuits then continue end
+                        minChance = ( 65 * ( 0.5 - suits[ i ] * 0.1 ) * ( st + 1 ) )
+                        
+                        if chance <= minChance then continue end
+                        for k, v in pairs( ent.decks[ new ] ) do if v.suit != i then picked[ #picked + 1 ] = k end end
+                        
+                        break
+                    end
+
+                    if table_IsEmpty( picked ) and st != 3  then
+                        local minSeq = random( 3, 4 )
+                        local seq = 0
+                        local cardSeq = {}
+                        local pair = false
+
+                        for i = 0, 12 do
+                            if ranks[ i ] > 0 then 
+                                seq = ( seq + 1 ) 
+                                if ranks[ i ] > 1 then pair = i end
+                                cardSeq[ #cardSeq + 1 ] = i 
+                            elseif seq > 0 then 
+                                seq = 0
+                                table_Empty( cardSeq )
+                            end
+                        end
+
+                        if seq >= minSeq then
+                            minChance = ( 75 * ( 0.6 - seq * 0.1 ) + ( st + 1 ) )
+
+                            if chance > minChance then
+                                for k, v in pairs( ent.decks[ new ] ) do
+                                    if table_HasValue( cardSeq, v.rank ) then
+                                        if pair and pair == v.rank then
+                                            pair = false
+                                            picked[ #picked + 1 ] = k
+                                        end
+                                    else
+                                        picked[ #picked + 1 ] = k
+                                    end
+                                end
+                            end
+                        end
+                    end
+
+                    if table_IsEmpty( picked ) then
+                        if st == 0 then
+                            minChance = ( highCard >= 6 and 0 or ( random( 15 ) * ( highCard * 0.5 ) ) )
+
+                            for k, v in pairs( ent.decks[ new ] ) do
+                                if v.rank == highCard then 
+                                    if chance > minChance then picked[ #picked + 1 ] = k end
+                                else
+                                    picked[ #picked + 1 ] = k
+                                end
+                            end
+                        else
+                            local set
+                            local keptCard = false
+
+                            for i = 0, 12 do if ranks[ i ] > 1 then set = i break end end
+                            minChance = ( random( 15 ) * set )
+
+                            for k, v in pairs( ent.decks[ new ] ) do
+                                if v.rank == set or chance > minChance then continue end
+                                picked[ #picked + 1 ] = k
+                            end
+                        end
+                    end
+                end
+
+                local curState = ent:GetGameState()
+                SimpleTimer( proceedTime, function()
+                    if !IsValid( ent ) or curState != ent:GetGameState() or ent:GetTurn() != new then return end
+
+                    if ent.decks[ new ] and !table_IsEmpty( picked ) then
+                        local old = picked
+                        for _, v in pairs( picked ) do ent:dealSingularCard( new, v ) end
+                        for _, v in pairs( old ) do ent.deck[ ent.decks[ new ][ v ].suit ][ ent.decks[ new ][ v ].rank ] = true end
+                        sound_Play( "gpoker/cardthrow.wav", ent:GetPos() )
+                    end
+                    if ent.players[ new ] then ent.players[ new ].ready = true end
+
+                    ent:updatePlayersTable()
+                    ent:proceed()
+                end )
+            elseif ent.players[ new ].bot then 
                 ent:simulateBotExchange( new ) 
-                return 
+            else
+                net.Start( "gpoker_derma_exchange" )
+                    net.WriteEntity( ent )
+                net.Send( ply )
             end
 
-            net.Start( "gpoker_derma_exchange" )
-                net.WriteEntity( ent )
-            net.Send( ply )
+            return
         end
 
         if ply.IsLambdaPlayer then
@@ -105,8 +217,9 @@ local function InitializeModule()
             for _, v in pairs( ent.communityDeck ) do if v.reveal then cards[ #cards + 1 ] = v end end
 
             local st, vl = ent:getDeckValue( cards )
-            local proceedTime = ( random( 10, 60 ) * 0.1 )
+            local proceedTime = ( random( 5, 50 ) * 0.1 )
             local plyEnt = Entity( ent.players[ new ].ind )
+            local curState = ent:GetGameState()
 
             if ent:GetCheck() then
                 local minCheckChance = random( 80 * ( st * 0.1 + vl * 0.01 + 0.1 ), 100 )
@@ -114,8 +227,8 @@ local function InitializeModule()
 
                 if chance >= minCheckChance or gPoker.betType[ ent:GetBetType() ].get( plyEnt ) < 1 then
                     SimpleTimer( proceedTime, function() 
-                        if !IsValid( ent ) or ent:GetGameState() < 1 then return end
-                        
+                        if !IsValid( ent ) or curState != ent:GetGameState() or ent:GetTurn() != new then return end
+
                         if ent.players[ new ] then ent.players[ new ].ready = true end
                         sound_Play( "gpoker/check.wav", ent:GetPos() ) 
 
@@ -126,9 +239,9 @@ local function InitializeModule()
                     local val = Clamp( floor( gPoker.betType[ ent:GetBetType() ].get( plyEnt ) * ( random( 5, 50 ) * 0.01 ) * ( st * ( random( 5 ) * 0.1 ) + 0.1 ) ), random( 5 ), 999999999999 )
 
                     SimpleTimer( proceedTime, function() 
-                        if !IsValid( ent ) or ent:GetGameState() < 1 then return end
-                        if ent.players[ new ] then gPoker.betType[ ent:GetBetType() ].add( plyEnt, -val, ent ) end
+                        if !IsValid( ent ) or curState != ent:GetGameState() or ent:GetTurn() != new then return end
 
+                        if ent.players[ new ] then gPoker.betType[ ent:GetBetType() ].add( plyEnt, -val, ent ) end
                         ent:SetCheck( false )
                         ent:SetBet( val )
 
@@ -147,13 +260,13 @@ local function InitializeModule()
                 local botValue = gPoker.betType[ ent:GetBetType() ].get( plyEnt )
 
                 local callChance = ( ( ( pow( 2 * botValue, 1.5 ) ) * pow( ( st + 1 ), 2 ) * ( 100 / ( 10 * ( bet + 1 ) ) ) ) / 100 * random( 5 ) )
-                local foldChance = ( ( ( 0.5 * botValue) * pow( 0.35 * ( bet + 1 ), 2 ) * ( 100 / ( 14000 * ( 0.5 * ( st + 1 ) ) ) ) ) / 100 * Clamp( ( ent:GetGameState() * ( random( 10, 20 ) * 0.1 ) ) / #gPoker.gameType[ ent:GetGameType() ].states, 0.1, 1.2 ) * random( 5 ) )
+                local foldChance = ( ( ( 0.5 * botValue) * pow( 0.35 * ( bet + 1 ), 2 ) * ( 100 / ( 14000 * ( 0.5 * ( st + 1 ) ) ) ) ) / 100 * Clamp( ( curState * ( random( 10, 20 ) * 0.1 ) ) / #gPoker.gameType[ ent:GetGameType() ].states, 0.1, 1.2 ) * random( 5 ) )
                 local raiseChance = ( ( ( pow( 2 * botValue, 1.5 ) ) * pow( ( st + 1 ), 2 ) * ( 100 / ( 25 * ( bet + 1 ) ) ) ) / 100 * random( 5 ) )
 
                 local canRaise = ( botValue > bet )
 
                 SimpleTimer( proceedTime, function()
-                    if !IsValid( ent ) or ent:GetGameState() < 1 then return end
+                    if !IsValid( ent ) or curState != ent:GetGameState() or ent:GetTurn() != new then return end
 
                     if foldChance > callChance and ( ( callChance > raiseChance and canRaise ) or true ) then
                         if ent.players[ new ] then ent.players[ new ].fold = true end
@@ -177,8 +290,7 @@ local function InitializeModule()
                     ent:updatePlayersTable()
 
                     SimpleTimer( 0.2, function()
-                        if !IsValid( ent ) or ent:GetGameState() < 1 then return end
-                        if gPoker.gameType[ ent:GetGameType() ].states[ ent:GetGameState() ].final then return end
+                        if !IsValid( ent ) or curState != ent:GetGameState() or ent:GetTurn() != new then return end                        
                         ent:proceed()
                     end )
                 end )
@@ -186,6 +298,7 @@ local function InitializeModule()
 
             return
         end
+
         if ent.players[ new ].bot then
             ent:simulateBotAction( new ) 
             return 
@@ -215,6 +328,7 @@ local function InitializeModule()
         if isLambda then
             ply.l_PlayingPoker = false
             ply.l_PokerTable = NULL
+            ply:PreventWeaponSwitch( false )
 
             local rndAction = ply.l_PokerQuitAction
             if rndAction == 1 then
@@ -384,13 +498,13 @@ local function InitializeModule()
     local function LambdaSetGameState( ent, name, old, new )
         -- Invite some nearby friendly Lambdas on a start of intermission
         if old == #gPoker.gameType[ ent:GetGameType() ].states and new == -1 then
-            local plyCount = ent:getPlayersAmount()
+            local plyCount = ( ent:GetBotsPlaceholder() and ent:getPlayersAmount() or #ent.players )
             local maxPlys = ent:GetMaxPlayers()
             
             if plyCount < maxPlys then
                 for _, lambda in RandomPairs( GetLambdaPlayers() ) do
                     if !LambdaIsValid( lambda ) or lambda.l_PlayingPoker or lambda:InCombat() or lambda:IsPanicking() or !lambda:IsInRange( ent, 1000 ) then continue end
-                    if random( 100 ) > lambda:GetFriendlyChance() or random( 2 ) != 1 or !IsPokerTableAvailable( lambda, ent ) then continue end
+                    if random( 100 ) > lambda:GetFriendlyChance() or random( 2 ) != 1 or !lambda:IsPokerTableAvailable( ent ) then continue end
                     
                     self:SetState( "GoToPokerTable", ent )
                     self:CancelMovement()
@@ -469,6 +583,9 @@ local function InitializeModule()
         self:SetState( "SitState" )
         self.l_NextPokerTableCheck = ( CurTime() + random( 45, 180 ) )
 
+        self:SwitchWeapon( "none", true )
+        self:PreventWeaponSwitch( true )
+
         ent:CallOnRemove( "Lambda_GPokerSupport_OnTableRemove" .. self:GetCreationID(), function( ent ) 
             if !IsValid( self ) or !self.l_PlayingPoker then return end
             self.l_PlayingPoker = false
@@ -481,13 +598,13 @@ local function InitializeModule()
 
     local function IsPokerTableAvailable( self, tbl )
         if tbl:GetBetType() == 1 and self:Health() <= tbl:GetEntryBet() then return false end
-        return ( tbl:GetGameState() < 1 and tbl:getPlayersAmount() < tbl:GetMaxPlayers() )
+        return ( tbl:GetGameState() < 1 and ( tbl:GetBotsPlaceholder() and tbl:getPlayersAmount() or #tbl.players ) < tbl:GetMaxPlayers() )
     end
 
     local tblMove = { run = true, tol = 80 }
     local function GoToPokerTable( self, pokerTbl )
         self:MoveToPos( pokerTbl, tblMove )
-        if !self:GetState( "GoToPokerTable" ) or !IsValid( pokerTbl ) or !IsPokerTableAvailable( self, pokerTbl ) then return true end
+        if !self:GetState( "GoToPokerTable" ) or !IsValid( pokerTbl ) or !self:IsPokerTableAvailable( pokerTbl ) then return true end
 
         if !self:IsInRange( pokerTbl, 80 ) then return end
         self:JoinPokerGame( pokerTbl )
@@ -514,6 +631,7 @@ local function InitializeModule()
 
             self.JoinPokerGame = JoinPokerGame
             self.GoToPokerTable = GoToPokerTable
+            self.IsPokerTableAvailable = IsPokerTableAvailable
             self.SetEyeAngles = LambdaSetEyeAngles
         end
 
@@ -546,7 +664,7 @@ local function InitializeModule()
             if self.l_PlayingPoker or self:InCombat() or self:IsPanicking() or !gamblerNumeroUno:GetBool() then return end
 
             for _, tbl in RandomPairs( FindByClass( "ent_poker_game" ) ) do
-                if !IsValid( tbl ) or !IsPokerTableAvailable( self, tbl ) or !self:IsInRange( tbl, 2000 ) then continue end
+                if !IsValid( tbl ) or !self:IsPokerTableAvailable( tbl ) or !self:IsInRange( tbl, 2000 ) then continue end
                 self:SetState( "GoToPokerTable", tbl )
                 self:CancelMovement()
                 break
@@ -567,7 +685,7 @@ local function InitializeModule()
 
             local tbl = self.l_PokerTable
             if IsValid( tbl ) then 
-                if tbl:getPlayersAmount() == 1 then
+                if ( tbl:GetBotsPlaceholder() and tbl:getPlayersAmount() or #tbl.players ) == 1 then
                     tbl:removePlayerFromMatch( self )
                     return
                 end
