@@ -510,8 +510,9 @@ local function InitializeModule()
 
     local function LambdaSetGameState( ent, name, old, new )
         local plys = ent.players
+        local stateAdd = ( ent:GetGameType() == 1 and 4 or 0 )
 
-        if new == 0 then
+        if new < 1 or new == ( 6 + stateAdd ) then
             local intermissionTime = 5
             
             if ( ent:GetBotsPlaceholder() and ent:getPlayersAmount() or #plys ) < ent:GetMaxPlayers() then
@@ -532,6 +533,11 @@ local function InitializeModule()
             end
             
             ent.intermission = intermissionTime
+
+            net.Start( "lambdagpoker_setintermissiontime" )
+                net.WriteEntity( ent )
+                net.WriteUInt( intermissionTime, 8 )
+            net.Broadcast()
         end
 
         -- Invite some nearby friendly Lambdas on a start of intermission
@@ -555,10 +561,7 @@ local function InitializeModule()
             return
         end
 
-        if old <= 2 then return end
-
-        local stateAdd = ( ent:GetGameType() == 1 and 4 or 0 )
-        if new == ( 6 + stateAdd ) then return end
+        if old <= 2 or new == ( 6 + stateAdd ) then return end
 
         SimpleTimer( 0, function()
             if !IsValid( ent ) then return end
@@ -679,6 +682,7 @@ local function InitializeModule()
     if ( SERVER ) then
 
         util.AddNetworkString( "lambdagpoker_modifydrawfunc" )
+        util.AddNetworkString( "lambdagpoker_setintermissiontime" )
 
         --
 
@@ -804,6 +808,7 @@ local function InitializeModule()
 
                 self.deckPot:SetLocalAngles( Angle( 0, CurTime() % 360 * 10, 0 ) )
                 self.deckPot:SetLocalPos(Vector( 0, 0, math.sin( CurTime() * 3 ) + 39 ) )
+                self.deckPot:SetParent( self ) -- Gets NULL'ed when out of PVS
             end
 
             for _, v in pairs( self.players ) do
@@ -883,8 +888,12 @@ local function InitializeModule()
 
         net.Receive( "lambdagpoker_modifydrawfunc", function() 
             local ent = net.ReadEntity()
-            if !IsValid( ent ) then return end
-            ent.Draw = ModifiedDraw
+            if IsValid( ent ) then ent.Draw = ModifiedDraw end
+        end )
+
+        net.Receive( "lambdagpoker_setintermissiontime", function()
+            local ent = net.ReadEntity()
+            if IsValid( ent ) then ent.intermission = net.ReadUInt( 8 ) end
         end )
 
     end
