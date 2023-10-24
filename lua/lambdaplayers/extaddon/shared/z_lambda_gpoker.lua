@@ -24,6 +24,7 @@ local function InitializeModule()
     local table_Copy = table.Copy
     local table_IsEmpty = table.IsEmpty
     local table_Empty = table.Empty
+    local table_HasValue = table.HasValue
     local ipairs = ipairs
     local Rand = math.Rand
     local random = math.random
